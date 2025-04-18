@@ -394,7 +394,7 @@ if __name__ == "__main__":
     parser.add_argument("--lora_dropout", type=float, default=0.0, help="LoRA dropout.")
 
     # Dataset args
-    parser.add_argument("--dataset_name", type=str, default="freds0/sabrine_synth_11labs_v20250328", help="Name of the dataset on Hugging Face Hub.")
+    parser.add_argument("--dataset_name", type=str, default="freds0/BRSpeech-TTS-Leni", help="Name of the dataset on Hugging Face Hub.")
     parser.add_argument("--num_amostras", type=int, default=-1, help="Number of dataset samples to use (-1 for all).")
     parser.add_argument("--max_audio_duration", type=float, default=10.0, help="Maximum audio duration in seconds for filtering.")
 
