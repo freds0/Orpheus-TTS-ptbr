@@ -1,4 +1,4 @@
-# Orpheus-TTS-ptbr
+# Orpheus-TTS Unsloth FineTuning
 
 This repository contains scripts for fine-tuning and running inference with an [Orpheus-TTS](https://github.com/canopyai/Orpheus-TTS) model. It utilizes the SNAC codec for audio tokenization/detokenization and leverages Unsloth for efficient LoRA fine-tuning.
 
