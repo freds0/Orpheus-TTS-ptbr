@@ -1,11 +1,12 @@
 import argparse
+import unsloth
 import os
 import locale
 import torch
 import torchaudio.transforms as T
 from datasets import load_dataset
 # Import AutoTokenizer
-from transformers import AutoTokenizer, TrainingArguments, Trainer, EarlyStoppingCallback
+from transformers import AutoTokenizer, TrainingArguments, Trainer, EarlyStoppingCallback, DataCollatorForSeq2Seq 
 from unsloth import FastLanguageModel
 from snac import SNAC
 import numpy as np
@@ -147,6 +148,10 @@ def create_input_ids(example, tokenizer): # Pass tokenizer explicitly
 def main(args):
     logger.info("Starting training script...")
     logger.info(f"Arguments: {args}")
+    
+    if args.hf_token:
+        os.environ["HUGGINGFACE_TOKEN"] = args.hf_token
+        logger.info("Hugging Face token set.")
 
     # --- Tokenizer Loading (BEFORE dataset processing) ---
     logger.info("Loading ONLY the tokenizer...")
@@ -155,22 +160,34 @@ def main(args):
         tokenizer = AutoTokenizer.from_pretrained(
             args.base_model_name,
             # token = "hf_..." # Add if your base model is gated
-            trust_remote_code=True # Often needed for custom tokenizers/models
+            trust_remote_code=True, # Often needed for custom tokenizers/models,
+            # padding=True, truncation=True
         )
         # Note: Manual special token definitions are in create_input_ids.
         # Ensure padding token is set if needed by potential collators, though not explicitly used here yet.
         # if tokenizer.pad_token is None:
         #    logger.warning("Tokenizer does not have a pad token set. Setting to eos_token.")
         #    tokenizer.pad_token = tokenizer.eos_token # Common practice
+        if tokenizer.pad_token is None:
+            logger.warning("Tokenizer does not have a pad token. Setting pad_token = eos_token.")
+            tokenizer.pad_token = tokenizer.eos_token
+            # Certifique-se que o model.config também sabe disso se necessário,
+            # embora para o collator, o tokenizer.pad_token_id seja o principal.
+            # Se encontrar problemas, pode ser necessário ajustar model.config.pad_token_id também
+            # model.config.pad_token_id = tokenizer.pad_token_id
+        logger.info(f"Tokenizer loaded. Pad token: {tokenizer.pad_token}, Pad token ID: {tokenizer.pad_token_id}")
         logger.info("Tokenizer loaded successfully.")
     except Exception as e:
         logger.error(f"Failed to load tokenizer for '{args.base_model_name}': {e}")
         raise
+    
 
+        logger.info(f"Tokenizer loaded. Pad token: {tokenizer.pad_token}, Pad token ID: {tokenizer.pad_token_id}")
     # --- Dataset Loading and Preprocessing ---
     logger.info(f"Loading dataset '{args.dataset_name}'...")
     try:
-        dataset = load_dataset(args.dataset_name, split='train')
+        dataset = load_dataset(args.dataset_name, split='train') 
+        print(dataset[:5])
     except Exception as e:
         logger.error(f"Failed to load dataset '{args.dataset_name}': {e}")
         raise
@@ -202,6 +219,15 @@ def main(args):
     if filtered_count == 0:
         logger.error("No samples remaining after duration filtering!")
         raise ValueError("Filtering resulted in an empty dataset.")
+    
+    logger.info("Initializing Data Collator...")
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        padding=True, # Ativa o padding dinâmico para o comprimento máximo no batch
+        return_tensors="pt" # Retorna tensores PyTorch
+        # label_pad_token_id=-100 # Default do DataCollatorForSeq2Seq, ignora labels de padding na loss
+    )
+    logger.info("Data Collator initialized.")
 
     # --- SNAC Tokenization (Requires SNAC model) ---
     logger.info("Loading SNAC model...")
@@ -325,7 +351,7 @@ def main(args):
         report_to="tensorboard",
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs = {"use_reentrant" : False},
-        ddp_find_unused_parameters=False,
+        ddp_find_unused_parameters=False
     )
 
     logger.info("Initializing Trainer...")
@@ -334,8 +360,7 @@ def main(args):
         tokenizer=tokenizer, # Use the tokenizer loaded at the beginning
         train_dataset=dataset,
         args=training_args,
-        # data_collator=... # Add if needed
-        # callbacks=...     # Add if needed
+        data_collator=data_collator
     )
     logger.info("Trainer initialized.")
 
@@ -386,6 +411,9 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train or resume training for an Orpheus TTS model (Tokenizer loaded first).")
 
+    parser.add_argument("--hf_token", type=str, default=None, help="Hugging Face token for gated models.")
+    parser.add_argument("--use_auth_token", action="store_true", help="Use auth token for gated models.")
+    
     # Model and LoRA args
     parser.add_argument("--base_model_name", type=str, default="unsloth/orpheus-3b-0.1-ft-unsloth-bnb-4bit", help="Base model name from Hugging Face.")
     parser.add_argument("--max_seq_length", type=int, default=2048, help="Maximum sequence length for the model.")
@@ -396,7 +424,7 @@ if __name__ == "__main__":
     # Dataset args
     parser.add_argument("--dataset_name", type=str, default="freds0/BRSpeech-TTS-Leni", help="Name of the dataset on Hugging Face Hub.")
     parser.add_argument("--num_amostras", type=int, default=-1, help="Number of dataset samples to use (-1 for all).")
-    parser.add_argument("--max_audio_duration", type=float, default=10.0, help="Maximum audio duration in seconds for filtering.")
+    parser.add_argument("--max_audio_duration", type=float, default=15.0, help="Maximum audio duration in seconds for filtering.")
 
     # Preprocessing args
     parser.add_argument("--num_cpus", type=int, default=os.cpu_count() // 2 or 1, help="Number of CPUs for data processing (map/filter).")
@@ -404,8 +432,8 @@ if __name__ == "__main__":
     # Training args - Mirroring TrainingArguments where appropriate
     parser.add_argument("--output_dir", type=str, default="./outputs_tokenizer_first", help="Directory to save checkpoints and logs.") # Changed default dir slightly
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to a specific checkpoint directory to resume training from.")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=1, help="Batch size per GPU for training.")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4, help="Number of steps to accumulate gradients.")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=64, help="Batch size per GPU for training.")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of steps to accumulate gradients.")
     parser.add_argument("--warmup_steps", type=int, default=100, help="Number of warmup steps for the learning rate scheduler.")
     parser.add_argument("--max_steps", type=int, default=10000, help="Total number of training steps.")
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Initial learning rate.")
@@ -418,4 +446,3 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     main(args)
-
